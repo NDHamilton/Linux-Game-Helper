@@ -132,7 +132,7 @@ A Linux distribution with:
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/<yourusername>/Linux-Game-Helper.git
+   git clone https://github.com/NDHamilton/Linux-Game-Helper.git
    cd Linux-Game-Helper
    ```
 
@@ -157,13 +157,13 @@ A Linux distribution with:
 2. Run **Linux-Game-Helper** from a terminal or a launcher:
 
    ```bash
-   ./trainer.py
+   ./LinuxGH.py
    ```
 
    or:
 
    ```bash
-   python3 trainer.py
+   python3 LinuxGH.py
    ```
 
 3. The program will:
