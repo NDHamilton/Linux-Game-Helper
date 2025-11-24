@@ -54,7 +54,7 @@ Many Linux users are not comfortable with the terminal, so this tool is designed
 
    ```ini
    [Game Trainer Locations]
-   3489700 - = "/home/youruser/Applications/Games/Steam/common/StellarBlade/SBTrainer.exe"
+   3489700 - = "/path/to/exe"
    ```
 
 5. When launching, it uses:
