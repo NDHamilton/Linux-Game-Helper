@@ -479,11 +479,6 @@ Contributions are welcome! Please:
 
 ---
 
-## License
-
-[Choose your license – MIT, GPL, etc.]
-
----
 
 ## Credits
 
