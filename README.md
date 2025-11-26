@@ -25,7 +25,7 @@
    Or search for **"Linux Game Helper"** in your applications menu.
 4. **Configure Lutris game:**
 - Right-click the game > Configure > System Options > Click on "Advanced" Toggle > Game Execution
-- Set the Command prefix as ‘linuxgh init’
+- Set the Command prefix as (`linuxgh init`)
 - (Optional but Recommended)  Add environment variable ‘SteamAppId’ with the gameID. Use steamdb.info to find game.
 ---
 
