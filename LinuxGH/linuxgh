@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+import os
+import sys
+import subprocess
+import configparser
+from pathlib import Path
+
+
+class LinuxGHCore:
+    def __init__(self):
+        xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
+        if not xdg_runtime:
+            xdg_runtime = f"/run/user/{os.getuid()}"
+        self.phd = Path(xdg_runtime) / "linuxgh"
+
+
+    @staticmethod
+    def _parse_env_file(env_path: Path):
+        env = {}
+        try:
+            with env_path.open("r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line.startswith("declare -x "):
+                        continue
+                    line = line[len("declare -x "):]
+                    if "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    v = v.strip()
+                    # strip surrounding quotes if present
+                    if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+                        v = v[1:-1]
+                    env[k] = v
+        except Exception as e:
+            print(f"Warning: could not parse env file {env_path}: {e}", file=sys.stderr)
+        return env
+
+    def cmd_init(self, argv):
+        if not argv:
+            print("linuxgh init <cmd...>")
+            return 1
+
+        # SteamAppId is set by Steam, for Lutris we default to 'lutris'
+        steam_app_id = os.environ.get("SteamAppId", "lutris")
+
+        app_dir = self.phd / steam_app_id
+        app_dir.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env["LINUXGH_VERB"] = "run"
+
+        exe_path = None
+        pfx_path = None
+
+        protonpath = env.get("PROTONPATH")
+        wine = env.get("WINE")
+
+        if protonpath:
+            # Lutris Proton
+            exe_path = str(Path(protonpath) / "proton")
+            steam_compat_data_path = env.get("STEAM_COMPAT_DATA_PATH", env.get("WINEPREFIX", ""))
+            env["STEAM_COMPAT_DATA_PATH"] = steam_compat_data_path
+            env.setdefault("STEAM_COMPAT_CLIENT_INSTALL_PATH", str(Path.home() / ".steam" / "steam"))
+            if not steam_compat_data_path:
+                game_dir = env.get("GAME_DIRECTORY", "")
+                steam_compat_data_path = str(Path(game_dir) / "pfx")
+                env["STEAM_COMPAT_DATA_PATH"] = steam_compat_data_path
+            pfx_path = str(Path(env["STEAM_COMPAT_DATA_PATH"]) / "pfx")
+        elif wine:
+            # Lutris Wine
+            exe_path = wine
+            pfx_path = env.get("WINEPREFIX", "")
+            env["LINUXGH_VERB"] = ""
+        else:
+            # Assume Steam Proton
+            for a in argv:
+                if "/proton" in a:
+                    exe_path = a
+                    break
+            if exe_path is None:
+                exe_path = argv[0]
+            steam_compat_data_path = env.get("STEAM_COMPAT_DATA_PATH", "")
+            if steam_compat_data_path:
+                pfx_path = str(Path(steam_compat_data_path) / "pfx")
+            else:
+                pfx_path = ""
+
+        (app_dir / "exe").write_text(exe_path + "\n", encoding="utf-8")
+        (app_dir / "pfx").write_text(pfx_path, encoding="utf-8")
+
+        with (app_dir / "env").open("w", encoding="utf-8") as f:
+            for k, v in env.items():
+                f.write(f'declare -x {k}="{v}"\n')
+
+        try:
+            proc = subprocess.Popen(argv)
+            proc.wait()
+            exit_code = proc.returncode
+        finally:
+            try:
+                for child in app_dir.iterdir():
+                    child.unlink()
+                app_dir.rmdir()
+            except Exception:
+                pass
+
+        return exit_code
+
+    def cmd_ls(self):
+        if not self.phd.exists():
+            return []
+        return sorted([p.name for p in self.phd.iterdir() if p.is_dir()])
+
+    def _get_app_dir(self, appid: str):
+        app_dir = self.phd / appid
+        if not app_dir.exists() or not app_dir.is_dir():
+            return None
+        return app_dir
+
+    def cmd_run(self, appid: str, target_cmd: list):
+        app_dir = self._get_app_dir(appid)
+        if app_dir is None:
+            print(f'No app running with appid "{appid}"', file=sys.stderr)
+            return 2
+
+        exe = (app_dir / "exe").read_text(encoding="utf-8").strip()
+        pfx = (app_dir / "pfx").read_text(encoding="utf-8").strip()
+        env_from_file = self._parse_env_file(app_dir / "env")
+
+        env = os.environ.copy()
+        env.update(env_from_file)
+
+        linuxgh_verb = env.get("LINUXGH_VERB", "run")
+
+        if linuxgh_verb:
+            cmd = [exe, linuxgh_verb] + target_cmd
+        else:
+            cmd = [exe] + target_cmd
+
+        subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return 0
+
+
+class TrainerLauncher:
+    """
+    GUI/front-end.
+    Uses zenity for dialogs.
+    """
+
+    def __init__(self):
+        self.core = LinuxGHCore()
+        config_dir = Path.home() / ".config" / "linuxgh"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        self.config_file = config_dir / "trainer_config.ini"
+        self.config = configparser.ConfigParser()
+        if self.config_file.exists():
+            self.config.read(self.config_file)
+        if "Game Trainer Locations" not in self.config:
+            self.config["Game Trainer Locations"] = {}
+
+    def save_config(self):
+        with self.config_file.open("w", encoding="utf-8") as f:
+            self.config.write(f)
+
+    def get_trainer_path(self, appid: str):
+        key = f"{appid} -"
+        value = self.config["Game Trainer Locations"].get(key, "")
+        return value.strip('"')
+
+    def set_trainer_path(self, appid: str, path: str):
+        key = f"{appid} -"
+        self.config["Game Trainer Locations"][key] = f'"{path}"'
+        self.save_config()
+
+    def show_message(self, title, message):
+        try:
+            subprocess.run(
+                ["zenity", "--info", "--title", title, "--text", message, "--width", "300"],
+                check=False,
+            )
+        except FileNotFoundError:
+            print(f"[{title}] {message}")
+
+    def show_choice(self, title, message, choices):
+        try:
+            cmd = [
+                "zenity",
+                "--list",
+                "--title", title,
+                "--text", message,
+                "--column", "Choice",
+                "--width", "300",
+                "--height", "200"
+            ] + choices
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except FileNotFoundError:
+            # terminal fallback
+            print(f"{title}\n{message}\n")
+            for i, c in enumerate(choices, 1):
+                print(f"{i}. {c}")
+            try:
+                sel = int(input("Enter choice number: ").strip())
+                if 1 <= sel <= len(choices):
+                    return choices[sel - 1]
+            except Exception:
+                return None
+        return None
+
+    def browse_file(self, title):
+        """Show file browser using zenity"""
+        try:
+            result = subprocess.run(
+                ["zenity", "--file-selection", "--title", title],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except FileNotFoundError:
+            print(title)
+            try:
+                return input("Enter full path to executable: ").strip()
+            except EOFError:
+                return None
+        return None
+
+
+    def get_running_appid(self):
+        appids = self.core.cmd_ls()
+        if not appids:
+            return None
+        return appids[0]
+
+    def run_gui(self):
+        appid = self.get_running_appid()
+        if not appid:
+            self.show_message(
+                "Linux Game Helper",
+                "No game context found.\n\nMake sure the game was started with:\nlinuxgh init %command%",
+            )
+            return
+
+        choice = self.show_choice(
+            "Linux Game Helper",
+            f"Game detected: {appid}\n\nWhat would you like to run?",
+            ["Trainer", "OtherExe"],
+        )
+        if not choice:
+            return
+
+        if choice == "Trainer":
+            trainer = self.get_trainer_path(appid)
+            if trainer and Path(trainer).exists():
+                self.core.cmd_run(appid, [trainer])
+            else:
+                trainer = self.browse_file("Select Trainer Executable")
+                if trainer:
+                    self.set_trainer_path(appid, trainer)
+                    self.core.cmd_run(appid, [trainer])
+        else:  # OtherExe
+            exe = self.browse_file("Select Executable to Run")
+            if exe:
+                self.core.cmd_run(appid, [exe])
+
+
+def main():
+    core = LinuxGHCore()
+
+    # If there are args, we act like a CLI tool
+    if len(sys.argv) > 1:
+        cmd = sys.argv[1]
+        if cmd == "init":
+            # linuxgh init <cmd...>
+            sys.exit(core.cmd_init(sys.argv[2:]))
+        elif cmd == "ls":
+            games = core.cmd_ls()
+            for g in games:
+                print(g)
+            sys.exit(0)
+        elif cmd == "run":
+            # linuxgh run <appid> <cmd...>
+            if len(sys.argv) < 4:
+                print("Usage: linuxgh run <appid> <cmd...>")
+                sys.exit(1)
+            appid = sys.argv[2]
+            target_cmd = sys.argv[3:]
+            sys.exit(core.cmd_run(appid, target_cmd))
+        else:
+            print(f"Unknown command: {cmd}")
+            print("Usage:")
+            print("  linuxgh init <cmd...>")
+            print("  linuxgh ls")
+            print("  linuxgh run <appid> <cmd...>")
+            sys.exit(1)
+    else:
+        # No args => GUI trainer/OtherExe launcher
+        launcher = TrainerLauncher()
+        launcher.run_gui()
+
+
+if __name__ == "__main__":
+    main()
